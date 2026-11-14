@@ -1,4 +1,4 @@
-# Apple Music Windows 端 + UNiDAYS 学生验证无限跳转一键修复工具 (`v1.0.0`)
+# Apple Music Windows 端 + UNiDAYS 学生验证无限跳转一键修复工具
 
 **🇨🇳 简体中文 | [🇺🇸 English](README.md)**
 
@@ -7,13 +7,11 @@
 [![App](https://img.shields.io/badge/Client-Apple%20Music%20UWP-FA243C?logo=applemusic)](https://apps.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-> 针对 **Windows 版 Apple Music (`AppleMusic.exe`) 已通过 UNiDAYS 学生验证却反复跳转、无法完成学生订阅** 问题的根因剖析与 **`v1.0.0` 中英双语一键修复工具**。
+> 本工具用于临时解决 **Windows 版 Apple Music (`AppleMusic.exe`) 已通过 UNiDAYS 学生验证，但客户端依然反复跳转、无法完成学生订阅** 的 Bug。目前该问题已反馈给 Apple 等待官方修复。本项目完全开源免费，仅作技术排错与学习交流，**不具备绕过学生验证或破解付费的功能**，也不涉及任何商业用途。
 
 ---
 
-## 为什么该问题与修复方案 100% 可复现？（核心原理剖析）
-
-该问题并非偶发的网络波动或账号异常，而是由 **Apple 服务端 `finance-app` 前端代码逻辑缺陷** 与 **Windows UWP 客户端 `AppxManifest.xml` 协议处理缺失** 共同导致的**必然现象**，因此在所有 Windows 10/11 客户端上 **100% 稳定复现**：
+请注意，经排查该问题并非偶发的网络波动或账号异常，而是由 **Apple 服务端 `finance-app` 前端代码逻辑缺陷** 与 **Windows UWP 客户端 `AppxManifest.xml` 协议处理缺失** 共同导致的必然现象，因其在所有 Windows 10/11 客户端上均可稳定复现：
 
 1. **前端模板无视已验证状态（`finance-app/templates/music/subscribe` 第 191 行）**：
    - 模板通过 `["block", "unless", [["get", "isStudentOfferSelected"]]]` 控制主按钮：只要用户选中了**大学生方案**（`salableAdamId: 1608221191`），按钮就无条件变成 **“验证资格 (Verify Eligibility)”**（`action: "verifyEligibility"`），完全忽略了 `service:music-subscription` 中已存在的 `isVerifiedStudent`（`userInfo.isStudent === true`）状态。
@@ -25,7 +23,7 @@
    - 若强行让 WebView2 跳转到带 `(ud_h, ud_s, ud_t)` 的 `studentSubscriptionOffers`，`MZBuy.woa/wa/buyProduct` 会报错 `"You could not be verified as a university student. Contact UNiDAYS® for support."`。
    - 从 UNiDAYS 网页端或 Apple Music 网页播放器点击“接受优惠/免费试听”则会跳转到 `https://itunes.apple.com/subscribe?app=music`，直接返回 **`404 Not Found`**。
 
-### `v1.0.0` 一键修复脚本为什么能 100% 稳定解决？
+### 如何解决？
 
 1. **自动拦截提取 `ud_s`**：通过临时注册 `HKCU\Software\Classes\itmss` 协议钩子，当浏览器完成 UNiDAYS 验证并回跳 `itmss://` 时，脚本自动捕获其中的 `ud_s` Token（捕获后立即清理该注册表项，无需手动抓包）。
 2. **通过 Ember 内部容器与 `Ember.$.ajax` 绑定学生身份**：
@@ -36,12 +34,12 @@
 
 ---
 
-## 一键修复工具 (`v1.0.0`) 使用方法
+## 使用方法
 
-### 方式一：双击一键运行（推荐）
+### 方式一：双击一键运行（Recommended）
 
 1. 双击运行仓库根目录下的 **`FixAppleMusicStudent.bat`**（或在 PowerShell 中运行 `.\OneClickFix.ps1`）。
-2. 输入 `1` 选择 **中文 (简体)**，或输入 `2` 选择 **English**。
+2. 选择语言。
 3. 脚本会自动配置临时 WebView2 调试端口（`9229`）、重启 `AppleMusic.exe`，并开启 `itmss://` 自动捕获。
 4. 在打开的 Apple Music 客户端中进入订阅方案页，选中 **大学生** 方案并点击 **验证资格 (Verify Eligibility)** 完成一次浏览器跳转（或直接粘贴已有的 `ud_s` Token / `itmss://` 链接）。
 5. 脚本自动完成后台学生状态绑定并弹出 Apple Music 原生订阅确认框，随后自动清理所有临时环境变量与注册表项。
@@ -79,12 +77,28 @@ apple-music-windows-unidays-fix/
 
 ---
 
-## 隐私与脱敏声明
+## 隐私与安全说明
 
-本仓库已完成全量脱敏，**不包含**任何个人 Apple 账号、密码、DSID、手机号或 `ud_s`/`ud_t`/`ud_h` 凭据。所有验证参数均在用户本地运行时动态捕获并仅用于向 Apple 官方接口发起绑定请求。
+由于脚本运行过程中需要处理客户端回调参数，这里对隐私安全做个明确说明：
+
+- **纯本地运行，零联网上报**：脚本所有操作均在本地完成（仅连接本机 `127.0.0.1:9229` 调试端口），没有任何第三方网络请求、统计代码或后门。向 Apple 提交学生状态的请求，是由你本机的 Apple Music 客户端直接发往 Apple 官方服务器（`*.itunes.apple.com`）的。
+- **不保存任何账号凭证**：拦截到的 `ud_s` 参数以及客户端内置的 `X-Dsid`、`X-Token` 等认证头仅在脚本运行时的内存里走一遍，用完即焚，**不会写入任何本地日志文件**，控制台输出也做了脱敏处理。
+- **用完自动清理，不留残余**：脚本为了拦截回调而临时写入的注册表项（`HKCU\Software\Classes\itmss`）和调试端口环境变量，在运行结束或中途关闭时都会自动清理还原，不会污染系统环境。
+- **全明文源码**：仓库里所有代码（`.bat`、`.ps1`、`.py`、`.cs`）均为明文脚本，没有打包成不明 `.exe` 可执行文件，随时可以打开源码直接检查。
+
+---
+
+## 免责与合规声明
+
+本项目严格遵守 [GitHub 服务条款](https://docs.github.com/zh/site-policy/github-terms/github-terms-of-service) 及相关法律法规：
+
+1. **非破解、非白嫖工具**：本脚本**不能绕过** UNiDAYS 的学生资格审核。使用前提是你本人已经合法通过了 UNiDAYS 验证，且最后依然需要通过 Apple 官方弹出的原生付款窗口完成订阅。脚本干的唯一一件事，就是帮 Windows 客户端把弄丢的跳转参数重新接上。
+2. **不篡改客户端文件**：脚本仅调用微软 WebView2 官方提供的标准 CDP 调试接口执行前端路由跳转，**不会修改、反编译或修补 `AppleMusic.exe` 的任何二进制文件**，也不涉及 DLL 注入或任何 DRM 音频加密绕过。
+3. **禁止商业倒卖**：本项目完全免费开源，严禁任何个人或店铺将其用于淘宝/闲鱼代充、付费代修等商业牟利行为。一旦 Apple 官方更新修复了 Windows 端的跳转 Bug，本仓库将直接归档（Archive）。
+4. **商标声明**：文中提到的 Apple、Apple Music、iTunes、UNiDAYS、Windows 等名称均为其各自所属公司的注册商标，本项目为独立个人开发，与上述公司没有任何关联。
 
 ---
 
 ## 开源许可
 
-本项目基于 [MIT License](LICENSE) 开源。
+本项目基于 [MIT License](LICENSE) 开源，按“原样（AS IS）”提供，开发者不对使用或修改本脚本可能产生的任何问题承担责任。

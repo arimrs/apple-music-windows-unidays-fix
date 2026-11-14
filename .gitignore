@@ -1,0 +1,16 @@
+# OS & Editor
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Temporary debug / screenshots / traces
+*.png
+*.etl
+*.xml
+tmp_*

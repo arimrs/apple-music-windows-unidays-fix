@@ -1,77 +1,61 @@
-# Apple Music Windows + UNiDAYS Student Verification Fix & Postmortem
+# Apple Music Windows + UNiDAYS Student Verification One-Click Fix (`v1.0.0`)
 
+**[🇨🇳 简体中文](README.zh-CN.md) | 🇺🇸 English**
+
+[![Release](https://img.shields.io/badge/Release-v1.0.0-blue.svg)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?logo=windows)](https://www.microsoft.com/windows)
 [![App](https://img.shields.io/badge/Client-Apple%20Music%20UWP-FA243C?logo=applemusic)](https://apps.microsoft.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-> A technical root-cause analysis and reference guide for fixing the **Apple Music on Windows + UNiDAYS student verification infinite redirect loop**, along with a structured catalog of Windows UIAutomation / WebView2 debugging errors encountered during automation.
+> **One-Click Fix (`v1.0.0`)** and root-cause analysis for the **Apple Music on Windows + UNiDAYS student verification infinite redirect loop**, supporting both **Chinese (`zh`)** and **English (`en`)**.
 
 ---
 
-## Table of Contents
+## Why Is This Bug 100% Reproducible? (Root Cause Analysis)
 
-- [Problem Overview](#problem-overview)
-- [Root Cause Analysis](#root-cause-analysis)
-- [Working Resolution](#working-resolution)
-- [Errors & Fixes Catalog](#errors--fixes-catalog)
-- [Repository Structure](#repository-structure)
-- [Security & Privacy Note](#security--privacy-note)
-- [License](#license)
+Both the symptom and the fix are **100% deterministic and reproducible** on Windows because the bug stems from static client/template logic in Apple's `finance-app` Ember bundle (`https://finance-app.itunes.apple.com`) and the Windows UWP `AppxManifest.xml` protocol registration of `AppleMusic.exe`:
 
----
+1. **Unconditional "Verify Eligibility" Button in `finance-app/templates/music/subscribe`**:
+   - Line 191 of `templates/music/subscribe` checks `["block", "unless", [["get", "isStudentOfferSelected"]]]` to toggle between **Try It Free** (`action: "startListening"`) and **Verify Eligibility** (`action: "verifyEligibility"`).
+   - It **completely ignores** `service:music-subscription`'s `isVerifiedStudent` property (`userInfo.isStudent === true`). Thus, selecting **University Student** (`salableAdamId: 1608221191`) on Windows *always* renders **Verify Eligibility**.
+2. **`itmss://` Deep-Link Parameter Loss in Windows UWP (`AppleMusic.exe`)**:
+   - Clicking **Verify Eligibility** invokes `verifyWithUnidays("studentSubscriptionOffersiTunes")`, opening the browser to UNiDAYS (`applemusic-spotlight.myunidays.hk` / `.com`), which redirects to:
+     `itmss://itunes.apple.com/studentSubscriptionOffers?app=music&ud_h=...&ud_s=...&ud_t=...`
+   - Windows UWP `AppleMusic.exe` handles the `itmss://` protocol activation in `AppxManifest.xml` solely by focusing the main window **without passing the `studentSubscriptionOffers` route or `(ud_h, ud_s, ud_t)` query parameters** into the embedded WebView2 (`finance-app`).
+3. **Backend Rejection on Manual Deep-Link Replay & `404` on Web Fallback**:
+   - Manually navigating WebView2 to `studentSubscriptionOffers` with `(ud_h, ud_s, ud_t)` causes `MZBuy.woa/wa/buyProduct` to fail with `"You could not be verified as a university student. Contact UNiDAYS® for support."`
+   - Clicking the offer button on the UNiDAYS partner web page or Apple Music Web Player opens `https://itunes.apple.com/subscribe?app=music`, which returns **`404 Not Found`**.
 
-## Problem Overview
+### Why the `v1.0.0` Fix Works Deterministically
 
-On Windows (`AppleMusic.exe` UWP + WebView2 `finance-app`), users who already hold a valid **UNiDAYS** student verification frequently encounter an endless redirect loop:
-
-1. Selecting the **University Student** plan inside Apple Music displays **Verify Eligibility** even after UNiDAYS verification succeeded.
-2. Clicking **Verify Eligibility** opens the browser to UNiDAYS, which redirects back via `itmss://itunes.apple.com/studentSubscriptionOffers?...`.
-3. Windows launches/focuses `AppleMusic.exe`, which **ignores the deep-link query parameters** and returns to the same **Verify Eligibility** screen.
-4. Clicking **Accept Offer / Free Trial** from the UNiDAYS partner page or Apple Music Web Player opens `https://itunes.apple.com/subscribe?app=music`, which returns **`404 Not Found`**.
-
----
-
-## Root Cause Analysis
-
-Inspection of Apple Music's embedded WebView2 `finance-app` bundle revealed four compounding issues:
-
-| Component | Behavior / Defect | Impact |
-| :--- | :--- | :--- |
-| `finance-app/templates/music/subscribe` | Uses `isStudentOfferSelected` to unconditionally render **Verify Eligibility** (`action: "verifyEligibility"`), ignoring `service:music-subscription`'s `isVerifiedStudent` (`userInfo.isStudent === true`). | Client UI keeps asking to verify even when the account is already eligible. |
-| `verifyWithUnidays("studentSubscriptionOffersiTunes")` | Opens `applemusic-spotlight.myunidays.hk/...` in an external browser, returning `itmss://itunes.apple.com/studentSubscriptionOffers?app=music&ud_h=...&ud_s=...&ud_t=...`. | Hand-off relies on `itmss://` protocol parsing. |
-| `AppleMusic.exe` (`AppxManifest.xml`) | Handles `itmss://` activation without forwarding the `studentSubscriptionOffers` route or `(ud_h, ud_s, ud_t)` parameters into the WebView2 `finance-app` instance. | Deep link drops all verification tokens and loops back to the start. |
-| `MZBuy.woa/wa/buyProduct` + Web redirect | Navigating WebView2 manually to `studentSubscriptionOffers` with `(ud_h, ud_s, ud_t)` fails validation; external web links to `itunes.apple.com/subscribe?app=music` return `404 Not Found`. | Neither manual deep-link replay nor web fallback completes checkout. |
+Instead of relying on the broken `itmss://` deep-link handoff:
+1. We intercept `ud_s` automatically from the `itmss://` redirect via a temporary `HKCU\Software\Classes\itmss` hook (cleaned up immediately after capture).
+2. Inside the live `finance-app.itunes.apple.com` Ember container (`Ember.Namespace.NAMESPACES.find(n => n && n.__container__)`), we resolve `bag.getFromBag('updateUnidaysStatusSrv')` (`https://p52-buy.itunes.apple.com/commerce/student/updateUnidaysStatus`) and invoke `Ember.$.ajax({ method: 'POST', data: JSON.stringify({ ud_s }) })` — which runs `Ember.$.ajaxPrefilter` to attach the native `X-Apple-Store-Front`, `X-Dsid`, and `X-Token` headers automatically, returning `HTTP 200` (`{"status": 0}`).
+3. Finally, on a clean `/music/subscribe` route (without `ud_h`/`ud_s`/`ud_t`), we select the Student offer (`offer.isStudent === true`) on `controller:music/subscribe` and invoke `route.send('startListening')`, immediately popping the native Windows Apple Music **Student (1-Month Free Trial, then renewal)** confirmation sheet.
 
 ---
 
-## Working Resolution
+## One-Click Fix (`v1.0.0`) Usage
 
-Instead of relying on the broken `itmss://` deep-link handoff, bind the UNiDAYS token directly inside the authenticated `finance-app` WebView2 context and trigger the student offer checkout directly:
+### Option A: Double-Click One-Click Launcher (Recommended)
 
-1. **Extract `ud_s` from UNiDAYS**
-   - Complete UNiDAYS login in the browser and capture the redirect URL (`itmss://itunes.apple.com/studentSubscriptionOffers?...&ud_s=<UD_S_TOKEN>&...`).
-2. **Bind UNiDAYS Status via `updateUnidaysStatus`**
-   - Inside the WebView2 `finance-app` origin (`https://finance-app.itunes.apple.com`), send:
-     ```http
-     POST https://p52-buy.itunes.apple.com/commerce/student/updateUnidaysStatus
-     Content-Type: application/json
+1. Double-click **`FixAppleMusicStudent.bat`** (or run `.\OneClickFix.ps1` in PowerShell).
+2. Select your language (`[1] 中文 (简体)` or `[2] English`).
+3. The script will automatically:
+   - Enable WebView2 CDP on `127.0.0.1:9229` and restart `AppleMusic.exe`.
+   - Set a temporary `itmss://` capture hook.
+4. In `AppleMusic.exe`, open the subscription plans sheet, select **University Student**, click **Verify Eligibility** (and finish UNiDAYS in your browser), **or** paste an existing `itmss://...&ud_s=...` URL/token.
+5. The script automatically binds `ud_s` via `updateUnidaysStatusSrv`, triggers the native Student checkout dialog, and cleans up all temporary registry keys (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` and `itmss` hook).
 
-     { "ud_s": "<UD_S_TOKEN>" }
-     ```
-   - Expected response: `HTTP 200` with `{"status": 0}`.
-3. **Trigger Student Plan Checkout Without Deep-Link Params**
-   - Invoke `route:music/subscribe` `send('startListening')` with the University Student offer (`salableAdamId: 1608221191`, `offerName: "com.apple.music.AppleMusicStudent"`) without `ud_h` / `ud_s` / `ud_t`.
-   - Complete the native **Sign-In Required** prompt, click **Confirm** on the Student Trial sheet, and complete **Billing Info** verification (e.g., UnionPay SMS OTP).
-4. **Verify Active Subscription**
-   - Confirm the home screen switches from the trial upsell banner to the subscriber home view and that full-length tracks play past the 30-second preview limit.
+### Option B: Command-Line Usage
 
----
+```powershell
+# Interactive (Chinese or English)
+.\OneClickFix.ps1 -Lang en
 
-## Errors & Fixes Catalog
-
-All runtime errors, Windows UIAutomation pitfalls, and WebView2 CDP issues encountered during diagnosis and automation are documented in detail in:
-
-- 📄 [**`docs/ERRORS_AND_FIXES.md`**](docs/ERRORS_AND_FIXES.md)
+# Direct with an already-captured ud_s token or itmss:// URL
+.\OneClickFix.ps1 -Lang en -UdS "<UD_S_TOKEN_OR_ITMSS_URL>"
+```
 
 ---
 
@@ -80,39 +64,25 @@ All runtime errors, Windows UIAutomation pitfalls, and WebView2 CDP issues encou
 ```text
 apple-music-windows-unidays-fix/
 ├── docs/
-│   └── ERRORS_AND_FIXES.md              # Detailed error catalog, symptoms, root causes, and fixes
+│   └── ERRORS_AND_FIXES.md              # Detailed catalog of 6 runtime/UIA/CDP errors & fixes
 ├── scripts/
-│   ├── enable_webview2_cdp.ps1          # Toggle WebView2 remote debugging port 9229 cleanly
-│   ├── bind_unidays_and_checkout.py     # Bind ud_s via updateUnidaysStatus & trigger student checkout
-│   └── FocusAppleMusic.cs               # Desktop-aware UIAutomation helper for WinUI 3 / UWP
+│   ├── bind_unidays_and_checkout.py     # Core Ember.$.ajax updateUnidaysStatusSrv + startListening engine
+│   ├── enable_webview2_cdp.ps1          # Standalone WebView2 port 9229 toggle utility
+│   └── FocusAppleMusic.cs               # WinUI 3 / UWP OpenDesktop("Default") UIAutomation helper
+├── FixAppleMusicStudent.bat             # One-click double-click launcher (v1.0.0)
+├── OneClickFix.ps1                      # Bilingual (ZH/EN) end-to-end automated fix script (v1.0.0)
+├── CHANGELOG.md                         # Release notes for v1.0.0
+├── README.md                            # English documentation
+├── README.zh-CN.md                      # Chinese documentation (简体中文文档)
 ├── .gitignore
-├── LICENSE
-└── README.md
+└── LICENSE
 ```
-
-### Quick Reproduction Steps
-
-1. Enable WebView2 CDP on port `9229`:
-   ```powershell
-   .\scripts\enable_webview2_cdp.ps1 -Enable
-   ```
-2. Restart `AppleMusic.exe` and open the subscription/account sheet so `finance-app.itunes.apple.com` loads.
-3. Obtain your `ud_s` token from the UNiDAYS redirect (`itmss://itunes.apple.com/studentSubscriptionOffers?...&ud_s=<UD_S_TOKEN>&...`).
-4. Bind `ud_s` and trigger checkout:
-   ```bash
-   pip install websocket-client
-   python .\scripts\bind_unidays_and_checkout.py --ud-s "<UD_S_TOKEN>" --checkout
-   ```
-5. Complete Apple Account sign-in, click **Confirm**, finish billing verification, and disable WebView2 CDP when done:
-   ```powershell
-   .\scripts\enable_webview2_cdp.ps1 -Disable
-   ```
 
 ---
 
-## Security & Privacy Note
+## Privacy & Sanitization Notice
 
-All account identifiers, passwords, DSIDs, phone numbers, and UNiDAYS/Apple session tokens (`ud_s`, `ud_t`, `ud_h`) have been stripped and replaced with placeholders such as `<UD_S_TOKEN>` and `<APPLE_ACCOUNT>`.
+This repository contains **zero** personal credentials, Apple IDs, passwords, DSIDs, phone numbers, or session tokens (`ud_s`, `ud_t`, `ud_h`). All user-specific values are dynamically captured at runtime on the user's own machine.
 
 ---
 
